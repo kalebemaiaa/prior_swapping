@@ -7,7 +7,7 @@ Este projeto implementa métodos de amostragem bayesiana para explorar posterior
 Necessário ter git e python instalado. Clone o repositório e navegue até ele:
 
 ```bash
-git clone link
+git clone https://github.com/kalebemaiaa/prior_swapping.git
 cd prior_swapping
 ```
 
@@ -84,3 +84,4 @@ Ou amostrar e usar prior swapping, como [feito em main](./main.py) através de $
 - [HMC implementing MCMC](https://www.tcbegley.com/blog/posts/mcmc-part-2)
 - [Score-models implementations](https://github.com/cheind/score-matching)
 - [Score matching explicação](https://jaketae.github.io/study/sliced-score-matching/)
+
