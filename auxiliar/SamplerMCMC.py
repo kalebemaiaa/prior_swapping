@@ -1,4 +1,5 @@
-from typing import Callable
+from typing import Callable, Literal, overload
+from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -7,10 +8,10 @@ import torch
 
 # @title Metropolis Hastings implementação
 class Sampler:
-    def __init__(self, f_log_prob: Callable |None = None, device: str="cpu", dtype=torch.float64):
+    def __init__(self, f_log_prob: Callable |None = None, device = None, dtype=torch.float64):
+        self.__device = device or "cuda" if torch.cuda.is_available() else "cpu"
+        self.__dtype = dtype
         self.__f_log_prob = f_log_prob
-        self.device = device
-        self.dtype = dtype
         self.amostras = None
 
     @property
@@ -21,20 +22,31 @@ class Sampler:
     def f_log_prob(self, f_log_prob):
         self.__f_log_prob = f_log_prob
 
-    def __mh_updater(self, estado_atual: torch.Tensor, logp_atual: float, **kwargs):
-        use_log_pdf: bool = kwargs["use_log_pdf"]
-        f_next_state: Callable = kwargs["f_next_state"]
+    def __mh_updater(self, estado_atual: torch.Tensor, logp_atual: float, use_log_pdf: bool, f_next_state: Callable|None = None):
+        was_scalar = False
+        if estado_atual.ndim == 0:
+            estado_atual = estado_atual.unsqueeze(-1)
+            was_scalar = True
+        if not f_next_state:
+            dim = estado_atual.shape[-1]
+            cov = torch.eye(dim, device=estado_atual.device, dtype=estado_atual.dtype)
+            f_next_state = lambda x: torch.distributions.MultivariateNormal(x, covariance_matrix=cov).sample()
         estado_proposto = f_next_state(estado_atual)
 
         # verossimilhanca
         logp_proposto = self.__f_log_prob(estado_proposto)
         # threshold atual
-        threshold = torch.rand((), device=self.device, dtype=self.dtype)
+        threshold = torch.rand((), device=self.__device, dtype=self.__dtype)
         if use_log_pdf:
             threshold = threshold.log()
 
-            # --- > if (log(verossimilhanca_propost / verossimilhanca_atual)) > log(threshcold)
-            # --- > if (log(verossimilhanca_propost) - log(verossimilhanca_atual)) > log(threshcold
+            # # --- > if (log(verossimilhanca_propost / verossimilhanca_atual)) > log(threshcold)
+            # # --- > if (log(verossimilhanca_propost) - log(verossimilhanca_atual)) > log(threshcold
+            # print("proposto: ", logp_proposto)
+            # print("atual: ", logp_atual)
+            # print(f"threshold {threshold} < {logp_proposto - logp_atual} proposto - atual ==>  ", threshold < logp_proposto - logp_atual)
+            # print(threshold)
+            # print("-"*25)
             if threshold < logp_proposto - logp_atual:
                 return estado_proposto, logp_proposto
 
@@ -46,12 +58,8 @@ class Sampler:
 
         return estado_atual, logp_atual
 
-
-    def __hmc_updater(self, estado_atual: torch.Tensor, logp_atual: float, **kwargs):
-        step_size = kwargs["step_size"]
-        n_steps = kwargs["n_steps"]
-        f_grad_log_prob = kwargs["f_grad_log_prob"]
-        r0 = torch.randn_like(estado_atual, device= self.device, dtype=self.dtype)
+    def __hmc_updater(self, estado_atual: torch.Tensor, logp_atual: float, step_size, n_steps: int, f_grad_log_prob: Callable):
+        r0 = torch.randn_like(estado_atual, device= self.__device, dtype=self.__dtype)
 
         valor_inicial = logp_atual - 0.5 * torch.sum(r0**2)
 
@@ -66,20 +74,25 @@ class Sampler:
 
             grad = f_grad_log_prob(theta)
             r = r + step_size * grad
-        
+
         r = r - 0.5 * step_size * grad
 
         logp_proposto = self.__f_log_prob(theta)
-        
+
         valor_final = logp_proposto - 0.5 * torch.sum(r ** 2)
 
         log_accept_ratio = valor_final - valor_inicial
-        threshold = torch.rand((), device=self.device, dtype=self.dtype).log()
+        threshold = torch.rand((), device=self.__device, dtype=self.__dtype).log()
         if threshold < log_accept_ratio:
             return theta, logp_proposto
 
         return estado_atual, logp_atual
 
+    @overload
+    def get_samples(self, method: Literal["mh"], estado_inicial: torch.Tensor, use_log_pdf: bool, n_amostras: int = 1000, burnin: float = 0.2, f_next_state: Callable|None = None) -> torch.Tensor: ...
+
+    @overload
+    def get_samples(self, method: Literal["hmc"], estado_inicial: torch.Tensor, step_size, n_steps: int, f_grad_log_prob: Callable, n_amostras: int = 1000, burnin: float = 0.2) -> torch.Tensor: ...
 
     def get_samples(self, method: str, estado_inicial: torch.Tensor, n_amostras: int=1000, burnin: float=0.2, **kwargs):
         if method.lower() == "mh":
@@ -88,17 +101,17 @@ class Sampler:
             updater = self.__hmc_updater
         else:
             raise ValueError("method deve ser 'hmc' ou 'mh'")
-        
+
         if self.__f_log_prob is None:
             raise ValueError("f_log_prob é um argumento necessário para a execução de qualquer método")
-        
-        estado_atual = torch.as_tensor(estado_inicial, device=self.device, dtype=self.dtype)
+
+        estado_atual = torch.as_tensor(estado_inicial, device=self.__device, dtype=self.__dtype)
         logp_atual = self.__f_log_prob(estado_atual)
-        
+
         burnin_amostras = int(burnin * n_amostras)
         amostras = []
-        
-        for _ in range(n_amostras):
+
+        for _ in tqdm(range(n_amostras), desc="Gerando amostras"):
             estado_atual, logp_atual = updater(estado_atual, logp_atual, **kwargs)
 
             if _ > burnin_amostras:
@@ -107,7 +120,7 @@ class Sampler:
         self.amostras = torch.stack(amostras)
         return self.amostras
 
-    
+
     def plot_cadeia(self, amostras=None, burnin: float|None=None, save_path: str|None=None, show_img: bool = False):
         if amostras is None:
             if self.amostras is None:
@@ -115,6 +128,7 @@ class Sampler:
 
             amostras = self.amostras
 
+        amostras = torch.as_tensor(amostras).flatten()
         fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
         if isinstance(burnin, float):
