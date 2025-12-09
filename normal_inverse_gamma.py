@@ -2,6 +2,8 @@ from auxiliar.distribuicoes import Normal, InverseGamma
 from auxiliar.otimizador_alpha import Otimizador
 from auxiliar.utils import make_log_density_SM
 
+from typing import Callable
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -53,10 +55,15 @@ alpha_star = otimizador_IG.find_alpha_star(
     log_density_SM=log_density_SM, 
     samples=fake_samples,
     N_dataset=len(data),
-    n_steps=1000,
+    n_steps=100000,
     K_alpha_samples=1000,
     alpha_dim=1
 )
+
+print(alpha_star)
+    
+def parametric_density():
+    pass
 
 # # Uma vez que temos alpha_star, podemos calcular p(theta)
 # def wrapper_p_theta()

@@ -1,29 +1,15 @@
+from abc import ABC, abstractmethod
 import numpy as np
 import torch
 
-
-class Laplace:
-    def __init__(self, media: float = 10, beta: float = 1, device = None, dtype = torch.float64):
-        self.__device = device or "cuda" if torch.cuda.is_available() else "cpu"
-        self.__dtype = dtype
-        self.__media = torch.tensor(media, dtype=self.__dtype, device=self.__device)
-        self.__beta = torch.tensor(beta, dtype=self.__dtype, device=self.__device)
-
-    def pdf(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
-        return torch.exp(-torch.abs(x - self.__media) / self.__beta) / (2 * self.__beta)
-
-    def log(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
-        return -torch.log(2 * self.__beta) - torch.abs(x - self.__media) / self.__beta
-
-    def grad_log(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
-        diff = x - self.__media
-        return -torch.sign(diff) / self.__beta
+class Distribution(ABC):
+    @abstractmethod
+    def pdf(self, x: torch.Tensor) -> torch.Tensor: ...
     
-
-class InverseGamma:
+    @abstractmethod
+    def log(self, x: torch.Tensor) -> torch.Tensor: ...
+    
+class InverseGamma(Distribution):
     def __init__(self, alpha, beta, device=None, dtype=torch.float64):
         # resolve device
         if device is None:
@@ -70,31 +56,98 @@ class InverseGamma:
         return 1.0 / y
 
 
-class Normal:
-    def __init__(self, media=0, sigma=1, device = None, dtype = torch.float64):
-        self.__device = device or "cuda" if torch.cuda.is_available() else "cpu"
+class Normal(Distribution):
+    def __init__(self, media=0, sigma:float|int=1, device = None, dtype = torch.float64):
+        self.__device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.__dtype = dtype
         self.__media = torch.tensor(media, dtype=self.__dtype, device=self.__device)
         self.__sigma = torch.tensor(sigma, dtype=self.__dtype, device=self.__device)
         self.__logZ = torch.log(2 * torch.pi * (self.__sigma ** 2))
 
     def pdf(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
         return torch.exp(-(x - self.__media) ** 2 / (2 * self.__sigma ** 2)) / torch.sqrt(2 * torch.pi * (self.__sigma ** 2))
 
     def log(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
         return -0.5 * (self.__logZ + (x - self.__media) ** 2 / (self.__sigma ** 2))
 
     def grad_log(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
         return -(x - self.__media) / (self.__sigma ** 2)
     
     def sample(self, size=1):
-        return torch.normal(self.__media, self.__sigma, size=(size,))
+        return torch.normal(self.__media.item(), self.__sigma.item(), size=(size,))
 
 
-class MultivariateNormal:
+class NormalVarianciaDesconhecida:
+    def __init__(self, mean: float|int) -> None:
+        self.__mean = mean
+        
+    def pdf(self, x, variancia):
+        pass
+        
+    def log(self, x, variancia):
+        pass
+    
+    def grad_log(self, x, variancia):
+        pass
+
+
+### Classes para usar em todos métodos
+
+class ParametricFakeDensity:
+    def __init__(self, fake_priori: Distribution, data_density, alpha_star: torch.Tensor, n_dataset: int) -> None:
+        self.__fake_priori = fake_priori
+        self.__data_density = data_density
+        self.__alpha_star = alpha_star
+        self.__ratio = n_dataset / alpha_star.shape[0]
+        
+    
+    def pdf(self, x):
+        prod = 1
+        for alpha_i in self.__alpha_star:
+            prod *= self.__data_density.pdf(alpha_i, x) ** self.__ratio
+        return self.__fake_priori.pdf(x) * prod
+    
+    def log(self, x):
+        soma = 0
+        for alpha_i in self.__alpha_star:
+            soma += self.__data_density.log(alpha_i, x)
+        return self.__fake_priori.log(x) + self.__ratio * soma
+    
+    
+class SemiParametricFakeDensity:
+    def __init__(self, samples_theta, kernel_function: Callable) -> None:
+        self.__samples_theta = samples_theta
+        self.__num_sampels = samples_theta.shape[0]
+    
+    def pdf(self):
+        somatorio = 0
+        for theta_i in self.__samples_theta:
+            kernel_function(\|samples_theta - theta\| / self.__bandwidth) * fake_parametric(\theta) / fake_parametric(theta_i) * (1 / (bandwidth ** dimensao de theta))
+        return 1/self.__num_sampels * 
+    
+    def log(self, )
+
+    
+### DISTRIBUIÇÕES CASO REGRESSÃO
+class Laplace(Distribution):
+    def __init__(self, media: float = 10, beta: float = 1, device = None, dtype = torch.float64):
+        self.__device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.__dtype = dtype
+        self.__media = torch.tensor(media, dtype=self.__dtype, device=self.__device)
+        self.__beta = torch.tensor(beta, dtype=self.__dtype, device=self.__device)
+
+    def pdf(self, x: torch.Tensor):
+        return torch.exp(-torch.abs(x - self.__media) / self.__beta) / (2 * self.__beta)
+
+    def log(self, x: torch.Tensor):
+        return -torch.log(2 * self.__beta) - torch.abs(x - self.__media) / self.__beta
+
+    def grad_log(self, x: torch.Tensor):
+        diff = x - self.__media
+        return -torch.sign(diff) / self.__beta
+
+
+class MultivariateNormal(Distribution):
     def __init__(self, mean: torch.Tensor, cov: torch.Tensor | None = None, precision: torch.Tensor | None = None, device = None, dtype = torch.float64):
         self.__device = device or "cuda" if torch.cuda.is_available() else "cpu"
         self.__dtype = dtype
@@ -106,16 +159,17 @@ class MultivariateNormal:
         if cov is not None:
             self.cov = cov.to(device=self.__device, dtype=self.__dtype)
             self.prec = torch.linalg.inv(self.cov)
-        else:
+        elif precision is not None:
             self.prec = precision.to(device=self.__device, dtype=self.__dtype)
             self.cov = torch.linalg.inv(self.prec)
+        else:
+            raise ValueError("O argumento `cov` ou o argumento `precision` precisam ser passados")
 
         self.d = self.mean.shape[0]
         self.logdet_cov = torch.logdet(self.cov)
         self.logZ = -0.5 * (self.d * np.log(2 * np.pi) + self.logdet_cov)
 
     def log(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
         diff = x - self.mean
         expo = -0.5 * torch.sum(diff * (self.prec @ diff.T).T, dim=-1)
         return self.logZ + expo
@@ -124,57 +178,29 @@ class MultivariateNormal:
         return torch.exp(self.log(x))
 
     def grad_log(self, x: torch.Tensor):
-        x = x.to(device=self.__device, dtype=self.__dtype)
         diff = x - self.mean
         return -(self.prec @ diff.unsqueeze(-1)).squeeze(-1)
-
-
-class PosterioriNormal:
+    
+class PosterioriNormal(Distribution):
     def __init__(self, X, y, priori, device = None, dtype = torch.float64):
         self.__device = device or "cuda" if torch.cuda.is_available() else "cpu"
         self.__dtype = dtype
-        self.X = X.to(device=self.__device, dtype=self.__dtype)
-        self.y = y.to(device=self.__device, dtype=self.__dtype)
+        self.X = X
+        self.y = y
         self.priori = priori
 
     def log_likelihood(self, theta, sigma=1.0):
-        theta = theta.to(device=self.__device, dtype=self.__dtype)
         resid = self.y - self.X @ theta
         n = self.y.shape[0]
-        return -0.5 * torch.sum(resid ** 2) / (sigma ** 2) - 0.5 * n * torch.log(2 * torch.pi * sigma ** 2)
+        return -0.5 * torch.sum(resid ** 2) / (sigma ** 2) - 0.5 * n * torch.log(2 * torch.pi * sigma ** 2) # type: ignore
 
-    def log(self, theta):
-        theta = theta.to(device=self.__device, dtype=self.__dtype)
-        return self.log_likelihood(theta) + self.priori.log(theta)
+    def log(self, x):
+        return self.log_likelihood(x) + self.priori.log(x)
 
     def grad_log_posteriori(self, theta, sigma=1.0):
-        theta = theta.to(device=self.__device, dtype=self.__dtype)
         resid = self.y - self.X @ theta
         grad = (self.X.T @ resid) / (sigma ** 2)
         return grad + self.priori.grad_log(theta)
 
     def posteriori(self, theta):
-        theta = theta.to(device=self.__device, dtype=self.__dtype)
-        return torch.exp(self.log_likelihood(theta)) * self.priori.pdf(theta)
-
-
-class PosterioriFromX:
-    def __init__(self, X, priori, sigma_x=1.0, device = None, dtype = torch.float64):
-        self.__device = device or "cuda" if torch.cuda.is_available() else "cpu"
-        self.__dtype = dtype
-        self.X = X.flatten().to(device=self.__device, dtype=self.__dtype)
-        self.priori = priori
-        self.sigma_x = torch.tensor(sigma_x, device=self.__device, dtype=self.__dtype)
-
-    def log_likelihood(self, theta):
-        theta = torch.as_tensor(theta, dtype=self.__dtype, device=self.__device)
-        resid = self.X - theta
-        return -(torch.sum(resid ** 2)) / 2
-
-    def log(self, theta: torch.Tensor):
-        theta = theta.to(device=self.__device, dtype=self.__dtype)
-        return self.priori.log(theta) + self.log_likelihood(theta)
-
-    def posteriori(self, theta):
-        theta = theta.to(device=self.__device, dtype=self.__dtype)
         return torch.exp(self.log_likelihood(theta)) * self.priori.pdf(theta)
